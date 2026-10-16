@@ -4,10 +4,10 @@ import UIKit
 // MARK: - Bento feed
 //
 // The home page is a composed page, not a timeline. The newest post is promoted
-// to a full-width hero, the rest interlock beneath it in pairs, and a lone
-// straggler closes the page at full width. Six posts is the whole window, so
-// the composition always has a top, a middle and a bottom — which is what a
-// column of identical cards never had.
+// to a full-width hero and the rest interlock beneath it in pairs, a lone
+// straggler closing the page at full width whenever the count runs odd.
+// Thirteen posts is the whole window, so the composition always has a top, a
+// middle and a bottom — which is what a column of identical cards never had.
 //
 // Every tile keeps the same anatomy as the old card, just at three different
 // volumes: how much, what was said, who said it. The amount stays the headline,

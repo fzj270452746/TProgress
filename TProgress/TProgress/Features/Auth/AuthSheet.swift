@@ -427,48 +427,7 @@ struct LegalSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 0) {
-            TPPageHeader(
-                title: document.title,
-                subtitle: "Last updated October 2026",
-                onBack: { dismiss() }
-            )
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    Text(document.preamble)
-                        .font(TPFont.display(17))
-                        .foregroundColor(.tpCream)
-                        .lineSpacing(5)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    TPFadeRule()
-
-                    ForEach(Array(document.sections.enumerated()), id: \.offset) { index, section in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 9) {
-                                Text(String(format: "%02d", index + 1))
-                                    .font(TPFont.figure(12, .bold))
-                                    .foregroundColor(.tpEmber)
-                                Text(section.title)
-                                    .font(TPFont.display(18, .bold))
-                                    .foregroundColor(.tpCream)
-                            }
-                            Text(section.body)
-                                .font(TPFont.ui(14.5))
-                                .foregroundColor(.tpCreamDim)
-                                .lineSpacing(5)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-                .padding(.horizontal, TPMetric.gutter)
-                .padding(.bottom, 40)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .tpBackdrop(.deep)
-        .preferredColorScheme(.dark)
+        LegalDocumentPage(document: document) { dismiss() }
     }
 }
 

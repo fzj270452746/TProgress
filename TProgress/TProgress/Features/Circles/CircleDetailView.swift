@@ -15,8 +15,18 @@ struct CircleDetailView: View {
     @State private var checkIns: [CDCheckIn] = []
     @State private var showingCheckIn = false
     @State private var showingGoal = false
+    @State private var showingMinimum = false
+    @State private var showingPrompt = false
 
     private var accent: Color { habit.accent }
+
+    /// This circle's question for the week, shown above the note so the line has
+    /// something concrete to answer.
+    private var currentPrompt: String? {
+        guard habit.isJoined else { return nil }
+        let question = PromptService.current(for: habit)
+        return question.isEmpty ? nil : question
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +40,8 @@ struct CircleDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     hero
+                    presence
+                    promptCard
                     weekCard
                     actionButton
                     challengeSection
@@ -58,14 +70,29 @@ struct CircleDetailView: View {
         .onChange(of: refresh.practice) { _ in reload() }
         .onChange(of: refresh.feed) { _ in reload() }
         .tpSheet(isPresented: $showingCheckIn) {
-            LogCheckInSheet(habit: habit) {
+            LogCheckInSheet(habit: habit, prompt: currentPrompt) {
                 showingCheckIn = false
+                // This sheet never used to broadcast, so logging from the circle
+                // left Today and Insights holding a stale count.
+                RefreshSignal.shared.bumpPractice()
                 reload()
             }
         }
         .tpSheet(isPresented: $showingGoal) {
             EditGoalSheet(habit: habit) {
                 showingGoal = false
+                reload()
+            }
+        }
+        .tpSheet(isPresented: $showingMinimum) {
+            MinimumEditorSheet(habit: habit) {
+                showingMinimum = false
+                reload()
+            }
+        }
+        .tpSheet(isPresented: $showingPrompt) {
+            PromptEditorSheet(habit: habit) {
+                showingPrompt = false
                 reload()
             }
         }
@@ -85,6 +112,49 @@ struct CircleDetailView: View {
                     showingGoal = true
                 } label: {
                     Label("Goal & frequency", systemImage: "target")
+                }
+
+                Button {
+                    showingMinimum = true
+                } label: {
+                    Label(
+                        habit.hasMinimum ? "Edit the minimum" : "Set a minimum",
+                        systemImage: "arrow.down.circle"
+                    )
+                }
+
+                if habit.hasMinimum && !habit.todayChecked {
+                    Button {
+                        logMinimum()
+                    } label: {
+                        Label("Only the minimum", systemImage: "arrow.down.circle.fill")
+                    }
+                }
+
+                if habit.todayRested {
+                    Button {
+                        cancelRest()
+                    } label: {
+                        Label("Undo today's rest", systemImage: "arrow.uturn.backward")
+                    }
+                } else if !habit.todayChecked {
+                    Button {
+                        declareRest()
+                    } label: {
+                        Label("Rest today", systemImage: "moon.zzz")
+                    }
+                }
+
+                Button {
+                    showingPrompt = true
+                } label: {
+                    Label("This week's question", systemImage: "questionmark.bubble")
+                }
+
+                Button {
+                    router.push(.backfill)
+                } label: {
+                    Label("Fill in a day", systemImage: "clock.arrow.circlepath")
                 }
 
                 if let id = habit.id {
@@ -116,6 +186,88 @@ struct CircleDetailView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .frame(width: 30)
+    }
+
+    // MARK: Presence
+    //
+    // How many others logged here today, as a count and nothing else. The log
+    // carries no author, so there is nobody to name and nothing to rank — and
+    // the number is derived from the circle's own seed, so it does not move
+    // between launches.
+
+    @ViewBuilder
+    private var presence: some View {
+        if habit.isJoined {
+            let company = CompanyService.today(for: habit)
+
+            HStack(spacing: 9) {
+                Image(systemName: "person.3")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(.tpSky)
+
+                Text(company.line)
+                    .font(TPFont.ui(12.5))
+                    .foregroundColor(.tpCreamDim)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 11)
+            .background(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(Color.tpSky.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .strokeBorder(Color.tpSky.opacity(0.22), lineWidth: 1)
+            )
+        }
+    }
+
+    // MARK: Prompt
+
+    @ViewBuilder
+    private var promptCard: some View {
+        if let question = currentPrompt {
+            VStack(alignment: .leading, spacing: 11) {
+                Text.tpLabel("This week's question")
+
+                Text(question)
+                    .font(TPFont.display(16, .bold))
+                    .foregroundColor(.tpCream)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+
+                Button {
+                    TPHaptic.tap()
+                    showingCheckIn = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Answer it")
+                            .font(TPFont.ui(12.5, .semibold))
+                    }
+                    .foregroundColor(.tpOnAccent)
+                    .padding(.horizontal, 14)
+                    .frame(height: 36)
+                    .background(Capsule(style: .continuous).fill(accent))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.tpInkRaised)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(accent.opacity(0.24), lineWidth: 1)
+            )
+        }
     }
 
     // MARK: Hero
@@ -307,53 +459,11 @@ struct CircleDetailView: View {
                         }
 
                     case .checkIn(let entry):
-                        checkInRow(entry)
+                        CheckInRow(entry: entry, accent: accent)
                     }
                 }
             }
         }
-    }
-
-    private func checkInRow(_ entry: CDCheckIn) -> some View {
-        HStack(spacing: 11) {
-            ZStack {
-                Circle()
-                    .fill(accent.opacity(0.15))
-                    .frame(width: 34, height: 34)
-
-                Image(systemName: entry.isFreeze ? "snowflake" : "checkmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(accent)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.isFreeze ? "Restored with a freeze card" : "Logged \(entry.amountLabel)")
-                    .font(TPFont.ui(13.5, .semibold))
-                    .foregroundColor(.tpCream)
-
-                if entry.hasNote {
-                    Text(entry.noteText)
-                        .font(TPFont.ui(12))
-                        .foregroundColor(.tpCreamFaint)
-                        .lineLimit(2)
-                }
-            }
-
-            Spacer(minLength: 6)
-
-            Text(entry.relativeTime)
-                .font(TPFont.ui(11))
-                .foregroundColor(.tpCreamFaint)
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .fill(Color.tpInkRaised)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .strokeBorder(Color.tpLine, lineWidth: 1)
-        )
     }
 
     // MARK: Recaps
@@ -486,6 +596,41 @@ struct CircleDetailView: View {
             ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
         }
         checkIns = habit.sortedCheckIns
+    }
+
+    // MARK: Actions
+
+    private func logMinimum() {
+        session.withAuth(prompt: "Sign in to log today.") {
+            guard HabitService.logMinimum(habit) != nil else { return }
+            TPHaptic.success()
+            tpToast("Minimum logged — that counts", tone: .success, symbol: "arrow.down.circle")
+            RefreshSignal.shared.bumpPractice()
+            reload()
+        }
+    }
+
+    private func declareRest() {
+        session.withAuth(prompt: "Sign in to set a rest day.") {
+            guard HabitService.declareRest(habit) else {
+                tpToast("That day cannot be rested", tone: .warning, symbol: "exclamationmark")
+                return
+            }
+            TPHaptic.success()
+            tpToast("Today is set aside", tone: .success, symbol: "moon.zzz")
+            RefreshSignal.shared.bumpPractice()
+            reload()
+        }
+    }
+
+    private func cancelRest() {
+        session.withAuth(prompt: "Sign in to change this.") {
+            HabitService.cancelRest(habit)
+            TPHaptic.tap()
+            tpToast("Rest removed", tone: .neutral, symbol: "arrow.uturn.backward")
+            RefreshSignal.shared.bumpPractice()
+            reload()
+        }
     }
 
     private var formattedMembers: String {

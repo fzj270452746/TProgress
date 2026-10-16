@@ -45,6 +45,9 @@ enum ChallengeService {
     static func join(_ challenge: CDChallenge) {
         guard !challenge.isJoined else { return }
         challenge.isJoined = true
+        // The day this account walked in — the half of the start line that the
+        // challenge window cannot supply.
+        if challenge.joinedAt == nil { challenge.joinedAt = Date() }
         CoreDataStack.shared.save()
     }
 
@@ -85,6 +88,98 @@ enum ChallengeService {
         }
 
         return rows.map { (user: $0.0, days: $0.1) }
+    }
+
+    // MARK: - Start line
+    //
+    // When everyone walked in. The window — `startDate` to `endDate` — describes
+    // the challenge and says nothing about the person; this is the other half,
+    // the day each account actually joined it.
+    //
+    // Names are used here, because these are real `CDUser` rows, which is the
+    // same convention `participants` follows. `CompanyService` is the opposite
+    // case and stays anonymous: it counts check-ins, and those carry no author.
+
+    struct Member: Identifiable {
+        let id: UUID
+        let name: String
+        let isMe: Bool
+        /// Days from the opening of the window. Zero means "here from the start".
+        let dayIndex: Int
+    }
+
+    struct StartLine {
+        let startDate: Date
+        let totalDays: Int
+        let members: [Member]
+        /// How many were already here on day zero.
+        let onTheLine: Int
+        let myDayIndex: Int
+
+        var hasAnything: Bool { totalDays > 0 && !members.isEmpty }
+    }
+
+    static func startLine(for challenge: CDChallenge, limit: Int = 12) -> StartLine {
+        let span = max(challenge.totalDays, 1)
+        let startDate = challenge.startDate ?? Date()
+
+        guard challenge.startDate != nil, challenge.endDate != nil else {
+            return StartLine(
+                startDate: startDate,
+                totalDays: 0,
+                members: [],
+                onTheLine: 0,
+                myDayIndex: 0
+            )
+        }
+
+        let others = CoreDataStack.shared.fetch(
+            CDUser.self,
+            predicate: NSPredicate(format: "isCurrentUser == NO AND isBlocked == NO"),
+            sortBy: [TPSort.byDisplayName]
+        )
+
+        // Drawn from the seed so the group clusters around the opening day and
+        // thins out across the window — which is what a group arriving at
+        // something actually looks like, and it is stable across launches.
+        var generator = SeededGenerator(seed: challenge.seed &+ 66_617)
+        var members: [Member] = []
+
+        for user in others.prefix(limit) {
+            let onOpeningDay = Double.random(in: 0...1, using: &generator) < 0.5
+            let spread = Double.random(in: 0...1, using: &generator)
+            let index = onOpeningDay ? 0 : Int((Double(span - 1) * spread).rounded())
+
+            members.append(Member(
+                id: user.id ?? UUID(),
+                name: user.name,
+                isMe: false,
+                dayIndex: min(max(index, 0), span - 1)
+            ))
+        }
+
+        if let me = AppSession.shared.currentUser, me.isCurrentUser {
+            // A challenge the account was auto-joined to has no join moment of
+            // its own; the backfill writes the start date, which reads as day
+            // zero — the honest answer for "you were already here".
+            members.insert(
+                Member(
+                    id: me.id ?? UUID(),
+                    name: me.name,
+                    isMe: true,
+                    dayIndex: min(max(challenge.myDayIndex, 0), span - 1)
+                ),
+                at: 0
+            )
+        }
+
+        return StartLine(
+            startDate: startDate,
+            totalDays: span,
+            members: members,
+            onTheLine: members.filter { $0.dayIndex == 0 }.count,
+            myDayIndex: min(max(challenge.myDayIndex, 0), span - 1)
+        )
     }
 
     // MARK: - Seeding
@@ -132,6 +227,11 @@ enum ChallengeService {
                 challenge.startDate = calendar.date(byAdding: .day, value: -14, to: today)
                 challenge.endDate = calendar.date(byAdding: .day, value: 16, to: today)
             }
+
+            // The account was put into this one by the app rather than joining
+            // by hand, so it was here from the opening day — which is what the
+            // start line should say, and it saves the backfill a pass.
+            challenge.joinedAt = challenge.startDate
         }
 
         CoreDataStack.shared.save()

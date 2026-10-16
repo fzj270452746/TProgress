@@ -1,0 +1,128 @@
+{
+  "identifier" : "TPROGRESS-STOREKIT-0001",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "0.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000001",
+      "localizations" : [
+        {
+          "description" : "One spark. Enough to start.",
+          "displayName" : "Ember",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "xbpixioboenxcing",
+      "referenceName" : "Gift - Ember",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "1.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000002",
+      "localizations" : [
+        {
+          "description" : "Steady light for a short page.",
+          "displayName" : "Candle",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "xislpazetkpczztn",
+      "referenceName" : "Gift - Candle",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000003",
+      "localizations" : [
+        {
+          "description" : "For the session you almost skipped.",
+          "displayName" : "Lantern",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "zgdbaqozbtwqrbqu",
+      "referenceName" : "Gift - Lantern",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000004",
+      "localizations" : [
+        {
+          "description" : "A week of showing up, honoured.",
+          "displayName" : "Bonfire",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "sqeepziytljcbbat",
+      "referenceName" : "Gift - Bonfire",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "19.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000005",
+      "localizations" : [
+        {
+          "description" : "You kept the streak alive. Rare.",
+          "displayName" : "Sunrise",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "babwwywodauzplys",
+      "referenceName" : "Gift - Sunrise",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "49.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000006",
+      "localizations" : [
+        {
+          "description" : "For progress that changed something.",
+          "displayName" : "Aurora",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "gbqgialtshxqiqmn",
+      "referenceName" : "Gift - Aurora",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "99.99",
+      "familyShareable" : false,
+      "internalID" : "TPGIFT0000000007",
+      "localizations" : [
+        {
+          "description" : "The loudest thank you we have.",
+          "displayName" : "Supernova",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "vrdjsfxdfzhhqpez",
+      "referenceName" : "Gift - Supernova",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "1000000001",
+    "_developerTeamID" : "",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US",
+    "_storefront" : "USA"
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

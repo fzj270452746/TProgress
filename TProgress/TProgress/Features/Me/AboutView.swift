@@ -145,6 +145,24 @@ struct AboutView: View {
                     title: "Gifts",
                     body: "Seven tokens, from a single ember to a supernova, for the posts that moved you to keep going."
                 )
+                principle(
+                    symbol: "arrow.down.circle",
+                    tint: .tpMint,
+                    title: "A floor",
+                    body: "Every circle can name the smallest version that still counts — out the door for five minutes. Doing only that counts the same as any other day."
+                )
+                principle(
+                    symbol: "moon.zzz",
+                    tint: .tpSky,
+                    title: "Rest, declared in advance",
+                    body: "A day off, said before it happens, keeps the run alive and costs nothing. Said afterwards it is not a rest, so the log does not take it."
+                )
+                principle(
+                    symbol: "square.grid.3x3",
+                    tint: .tpBloom,
+                    title: "The way back",
+                    body: "One page measures how long you are usually away before you return — because coming back is the practice, and a streak cannot see it."
+                )
             }
         }
     }

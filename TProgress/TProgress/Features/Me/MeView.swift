@@ -296,8 +296,25 @@ struct MeView: View {
 
     private var accountSection: some View {
         VStack(spacing: 10) {
-            TPRow(symbol: "info.circle", title: "About TProgress", accent: .tpSky) {
-                router.push(.about)
+            // Tools sits above About rather than in the tile grid: the grid holds
+            // seven destinations already, every accent in it is spoken for, and
+            // an eighth tile would read as one more of the same. This is a
+            // different kind of door, so it gets a row.
+            VStack(spacing: 0) {
+                TPRow(
+                    symbol: "wrench.and.screwdriver",
+                    title: "Tools",
+                    detail: "Ten small instruments",
+                    accent: .tpMint
+                ) {
+                    router.push(.tools)
+                }
+
+                TPFadeRule()
+
+                TPRow(symbol: "info.circle", title: "About TProgress", accent: .tpSky) {
+                    router.push(.about)
+                }
             }
             .padding(.horizontal, 16)
             .background(

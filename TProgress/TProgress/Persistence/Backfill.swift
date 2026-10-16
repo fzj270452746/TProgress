@@ -17,6 +17,9 @@ enum Backfill {
 
     static func runIfNeeded() {
         removeLegacyRecaps()
+        // Runs first: everything downstream reads the kind this writes down.
+        materialiseCheckInKinds()
+        backfillChallengeJoinDates()
         backfillGoals()
         backfillPostCircles()
         backfillDurations()
@@ -35,6 +38,47 @@ enum Backfill {
         // A week can complete while the app is closed, so the payout is checked
         // on the way in as well as after a log.
         HabitService.grantPerfectWeekIfEarned()
+    }
+
+    // MARK: - Kinds
+
+    /// Rows written before the log gained a vocabulary carry no `kindRaw`, and a
+    /// predicate cannot read a computed property — so the fallback that
+    /// `CDCheckIn.kind` performs in Swift is written down once, permanently, to
+    /// keep queries reliable.
+    ///
+    /// The setter writes `isFreeze` back to the value it already held, so this
+    /// pass is idempotent and changes nothing about how the rows behave: a
+    /// bought-back day keeps its snowflake, and everything else was a plain log.
+    private static func materialiseCheckInKinds() {
+        let pending = CoreDataStack.shared.fetch(
+            CDCheckIn.self,
+            predicate: NSPredicate(format: "kindRaw == nil")
+        )
+        guard !pending.isEmpty else { return }
+
+        for entry in pending {
+            entry.kind = entry.isFreeze ? .freeze : .standard
+        }
+        CoreDataStack.shared.save()
+    }
+
+    // MARK: - Challenge join dates
+
+    /// A challenge this account was already in when the field arrived has no join
+    /// moment on record. It was there from the start, which is what the start
+    /// line should say — rather than inventing a later day and being wrong.
+    private static func backfillChallengeJoinDates() {
+        let pending = CoreDataStack.shared.fetch(
+            CDChallenge.self,
+            predicate: NSPredicate(format: "joinedAt == nil")
+        )
+        guard !pending.isEmpty else { return }
+
+        for challenge in pending {
+            challenge.joinedAt = challenge.startDate ?? Date()
+        }
+        CoreDataStack.shared.save()
     }
 
     // MARK: - Goals

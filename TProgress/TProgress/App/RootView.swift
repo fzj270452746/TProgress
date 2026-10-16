@@ -201,6 +201,39 @@ struct RootView: View {
 
         case .legal(let document):
             LegalView(document: document)
+
+        case .tools:
+            ToolsView()
+
+        case .minimums:
+            MinimumView()
+
+        case .plannedRest:
+            PlannedRestView()
+
+        case .backfill:
+            BackfillView()
+
+        case .gapMap:
+            GapMapView()
+
+        case .perfunctory:
+            PerfunctoryView()
+
+        case .wordTime:
+            WordTimeView()
+
+        case .onThisDay:
+            OnThisDayView()
+
+        case .quietCompany:
+            QuietCompanyView()
+
+        case .prompts:
+            PromptLibraryView()
+
+        case .startLine:
+            StartLineView()
         }
     }
 

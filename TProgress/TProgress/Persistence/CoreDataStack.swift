@@ -20,6 +20,10 @@ final class CoreDataStack {
             description.shouldInferMappingModelAutomatically = true
         }
 
+        // Taken before the store is opened, so it survives whatever opening does
+        // to it — including the rebuild below.
+        Self.backUpStoreIfPresent()
+
         var loadError: Error?
         container.loadPersistentStores { _, error in
             loadError = error
@@ -53,6 +57,58 @@ final class CoreDataStack {
         for description in container.persistentStoreDescriptions {
             guard let url = description.url else { continue }
             try? coordinator.destroyPersistentStore(at: url, ofType: description.type, options: nil)
+        }
+    }
+
+    // MARK: - Backup
+    //
+    // A store that cannot be opened is rebuilt from nothing, which is the right
+    // call for the interface and the wrong one for the log — that file is the
+    // whole of what this app keeps. Copying it before every launch turns "a bad
+    // migration" from a permanent loss into a file sitting on disk.
+    //
+    // The dataset is small enough that the copy costs nothing worth measuring.
+
+    private static func backUpStoreIfPresent() {
+        let fileManager = FileManager.default
+        guard let directory = fileManager
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first
+        else { return }
+
+        let store = directory.appendingPathComponent("TProgress.sqlite")
+        guard fileManager.fileExists(atPath: store.path) else { return }
+
+        // The write-ahead log holds committed pages that have not been folded
+        // back into the main file yet. A backup that skips it can lose the most
+        // recent entries, which are the ones worth the trouble.
+        let stamp = ISO8601DateFormatter()
+            .string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+
+        for suffix in ["", "-wal"] {
+            let source = directory.appendingPathComponent("TProgress.sqlite\(suffix)")
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let target = directory.appendingPathComponent("TProgress-\(stamp).sqlite\(suffix)")
+            try? fileManager.copyItem(at: source, to: target)
+        }
+
+        // ISO-8601 stamps sort lexically, so the newest are simply the last
+        // names. Three deep is enough to survive a bad upgrade and the relaunch
+        // that follows it.
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )) ?? []
+
+        let backups = contents
+            .filter { $0.lastPathComponent.hasPrefix("TProgress-") && $0.pathExtension == "sqlite" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+
+        for old in backups.dropFirst(3) {
+            try? fileManager.removeItem(at: old)
+            let log = old.deletingPathExtension().appendingPathExtension("sqlite-wal")
+            try? fileManager.removeItem(at: log)
         }
     }
 

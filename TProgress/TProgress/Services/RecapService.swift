@@ -31,10 +31,11 @@ enum RecapService {
         habit.summaries.first { $0.kind == kind }
     }
 
-    /// How many sessions the account actually put in over the recap's period.
+    /// How many sessions the account actually put in over the recap's period. A
+    /// rest is not one, and neither is a bought-back day.
     static func sessions(of summary: CDStageSummary) -> Int {
         guard let habit = summary.habit else { return 0 }
-        return entries(of: habit, in: period(of: summary)).count
+        return workEntries(of: habit, in: period(of: summary)).count
     }
 
     private static func period(of summary: CDStageSummary) -> DateInterval? {
@@ -71,7 +72,8 @@ enum RecapService {
         guard span > 0 else { return Array(repeating: 0, count: buckets) }
 
         var values = Array(repeating: 0.0, count: buckets)
-        for entry in entries(of: habit, in: interval) {
+        // Effort, not presence: a rest day contributes nothing to the shape.
+        for entry in workEntries(of: habit, in: interval) {
             guard let date = entry.date else { continue }
             let offset = date.timeIntervalSince(interval.start) / span
             let index = min(max(Int(offset), 0), buckets - 1)
@@ -88,6 +90,24 @@ enum RecapService {
             guard let date = entry.date else { return false }
             return date >= interval.start && date <= interval.end
         }
+    }
+
+    /// The entries where the work actually happened. A rest and a bought-back day
+    /// are presence without effort, so everything measuring effort reads this
+    /// instead — including the unit, which would otherwise be resolved as
+    /// "rested" for a circle with a lot of them.
+    private static func workEntries(of habit: CDHabit, in interval: DateInterval?) -> [CDCheckIn] {
+        entries(of: habit, in: interval).filter(\.countsAsSession)
+    }
+
+    /// Days in the period the account set aside as rest.
+    private static func restDays(of habit: CDHabit, in interval: DateInterval?) -> Int {
+        let calendar = Calendar.current
+        return Set(
+            entries(of: habit, in: interval)
+                .filter(\.isRest)
+                .compactMap { $0.date.map { calendar.startOfDay(for: $0) } }
+        ).count
     }
 
     // MARK: - Generating
@@ -135,50 +155,71 @@ enum RecapService {
         interval: DateInterval,
         to summary: CDStageSummary
     ) {
+        let calendar = Calendar.current
         let entries = entries(of: habit, in: interval)
-        let loggedDays = Set(entries.compactMap { $0.date.map { Calendar.current.startOfDay(for: $0) } })
+        let work = workEntries(of: habit, in: interval)
+        let rests = restDays(of: habit, in: interval)
+
+        // Presence, which includes a rest: the day did not go by unaccounted for.
+        let loggedDays = Set(entries.compactMap { $0.date.map { calendar.startOfDay(for: $0) } })
+        // Doing, which does not.
+        let workedDays = Set(work.compactMap { $0.date.map { calendar.startOfDay(for: $0) } })
 
         summary.title = "\(habit.title) · \(kind.label)"
         summary.periodStart = interval.start
         summary.periodEnd = interval.end
-        summary.unit = unit(for: habit, entries: entries)
-        summary.totalValue = entries.reduce(0) { $0 + $1.amountValue }
-        summary.completionRate = completionRate(habit: habit, interval: interval, loggedDays: loggedDays)
+        // Read off the work, so a circle with a lot of rests does not end up
+        // reporting its totals in "rested".
+        summary.unit = unit(for: habit, entries: work)
+        summary.totalValue = work.reduce(0) { $0 + $1.amountValue }
+        summary.completionRate = completionRate(
+            habit: habit,
+            interval: interval,
+            workedDays: workedDays,
+            restDays: rests
+        )
         summary.reflection = reflection(
             habit: habit,
             kind: kind,
             loggedDays: loggedDays.count,
-            sessions: entries.count
+            sessions: work.count,
+            rests: rests
         )
     }
 
     /// Consistency against what the goal actually asked for, not against every
     /// day on the calendar.
+    ///
+    /// Rest days come off the ask rather than counting as an answer, so taking
+    /// one neither helps nor hurts. It removes the question instead of answering
+    /// it, which is the only way this number stays worth reading.
     private static func completionRate(
         habit: CDHabit,
         interval: DateInterval,
-        loggedDays: Set<Date>
+        workedDays: Set<Date>,
+        restDays: Int
     ) -> Double {
         let calendar = Calendar.current
         let span = max((calendar.dateComponents([.day], from: interval.start, to: interval.end).day ?? 0) + 1, 1)
 
-        let expected: Int
+        let asked: Int
         switch habit.goalType {
         case .daily:
-            expected = span
+            asked = span
         case .weeklyCount:
-            expected = max(Int((Double(max(habit.goalTarget, 1)) * Double(span) / 7).rounded()), 1)
+            asked = max(Int((Double(max(habit.goalTarget, 1)) * Double(span) / 7).rounded()), 1)
         case .weekdays:
             let mask = habit.goalWeekdayMask
-            expected = mask == 0 ? span : (0..<span).reduce(0) { total, offset in
+            asked = mask == 0 ? span : (0..<span).reduce(0) { total, offset in
                 guard let day = calendar.date(byAdding: .day, value: offset, to: interval.start) else { return total }
                 let weekday = calendar.component(.weekday, from: day)
                 return total + (HabitWeekday.contains(mask, HabitWeekday(rawValue: weekday) ?? .sunday) ? 1 : 0)
             }
         }
 
-        guard expected > 0 else { return 0 }
-        return min(1, Double(loggedDays.count) / Double(expected))
+        let expected = max(asked - restDays, 0)
+        guard expected > 0 else { return workedDays.isEmpty ? 0 : 1 }
+        return min(1, Double(workedDays.count) / Double(expected))
     }
 
     /// Prefers the circle's own goal unit, falling back to whatever the entries
@@ -199,7 +240,8 @@ enum RecapService {
         habit: CDHabit,
         kind: RecapKind,
         loggedDays: Int,
-        sessions: Int
+        sessions: Int,
+        rests: Int
     ) -> String {
         let span = kind.days
         guard sessions > 0 else {
@@ -215,9 +257,14 @@ enum RecapService {
         default:        shape = "Thin, but not nothing."
         }
 
-        let tail = missed == 0
+        var tail = missed == 0
             ? "Not a day missed."
             : "\(missed) day\(missed == 1 ? "" : "s") went by without it, and the log came back either way."
+
+        // Named rather than folded into the gaps, because a rest is not one.
+        if rests > 0 {
+            tail += " \(rests) more \(rests == 1 ? "was" : "were") set aside in advance."
+        }
 
         return "\(loggedDays) of \(span) days on \(habit.title) — \(sessions) session\(sessions == 1 ? "" : "s"). \(shape) \(tail)"
     }

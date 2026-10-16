@@ -66,6 +66,20 @@ enum TPRoute: Hashable {
     case yearReview
     case about
     case legal(LegalDocument)
+
+    // Tools. One hub, entered from the profile, holding the instruments that
+    // keep the record honest and read it back.
+    case tools
+    case minimums
+    case plannedRest
+    case backfill
+    case gapMap
+    case perfunctory
+    case wordTime
+    case onThisDay
+    case quietCompany
+    case prompts
+    case startLine
 }
 
 // MARK: - Router

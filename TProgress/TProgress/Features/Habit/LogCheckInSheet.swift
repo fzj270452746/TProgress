@@ -13,6 +13,12 @@ import SwiftUI
 struct LogCheckInSheet: View {
 
     let habit: CDHabit
+
+    /// The question this entry is answering, when it came from one. Shown above
+    /// the note so the line has something to answer — which is the whole of the
+    /// feature: the question does the work, and no extra chrome is needed.
+    var prompt: String? = nil
+
     let onDone: () -> Void
 
     @State private var amount = ""
@@ -26,6 +32,7 @@ struct LogCheckInSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
+            if let prompt { promptCard(prompt) }
             amountSection
             minutesSection
             noteSection
@@ -35,6 +42,30 @@ struct LogCheckInSheet: View {
         .padding(.top, 2)
         .padding(.bottom, 26)
         .onAppear(perform: load)
+    }
+
+    // MARK: Prompt
+
+    private func promptCard(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text.tpLabel("This week's question")
+
+            Text(text)
+                .font(TPFont.display(15, .bold))
+                .foregroundColor(.tpCream)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(habit.accent.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(habit.accent.opacity(0.30), lineWidth: 1)
+        )
     }
 
     // MARK: Header
@@ -137,6 +168,14 @@ struct LogCheckInSheet: View {
                 save()
             }
 
+            // The floor, offered where the decision is actually being made. A
+            // day that only got the minimum counts exactly as a full one does.
+            if existing == nil && habit.hasMinimum {
+                TPOutlineButton(title: "Only the minimum", symbol: "arrow.down.circle") {
+                    logMinimum()
+                }
+            }
+
             if existing != nil {
                 TPQuietButton(title: "Remove today's log", tint: .tpDanger) {
                     remove()
@@ -187,9 +226,9 @@ struct LogCheckInSheet: View {
         let time = Int(minutes) ?? 0
 
         if let entry = existing {
-            HabitService.update(entry, amount: value, unit: unit, minutes: time, note: note)
+            HabitService.update(entry, amount: value, unit: unit, minutes: time, note: note, prompt: prompt)
         } else {
-            HabitService.logCheckIn(habit, amount: value, unit: unit, minutes: time, note: note)
+            HabitService.logCheckIn(habit, amount: value, unit: unit, minutes: time, note: note, prompt: prompt)
         }
 
         TPHaptic.success()
@@ -205,6 +244,16 @@ struct LogCheckInSheet: View {
         HabitService.removeToday(habit)
         TPHaptic.tap()
         tpToast("Removed today's log", tone: .neutral, symbol: "arrow.uturn.backward")
+        onDone()
+    }
+
+    /// The smallest version, logged without filling anything in. Kept separate
+    /// from `save()` on purpose: this path is meant to cost one tap, and a form
+    /// standing between someone and the floor is the form defeating the floor.
+    private func logMinimum() {
+        guard HabitService.logMinimum(habit) != nil else { return }
+        TPHaptic.success()
+        tpToast("Minimum logged — that counts", tone: .success, symbol: "arrow.down.circle")
         onDone()
     }
 }

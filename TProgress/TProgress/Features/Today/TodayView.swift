@@ -49,10 +49,11 @@ struct TodayView: View {
 
     @Namespace private var segment
 
-    /// The home feed is a window, not a timeline. Six posts is the whole page:
-    /// enough to see who is moving and what they logged, short enough that the
-    /// page still ends somewhere. Everything older stays on each profile shelf.
-    private let homeLimit = 6
+    /// The home feed is a window, not a timeline. Thirteen posts is the whole
+    /// page: enough to see who is moving and what they logged, short enough
+    /// that the page still ends somewhere. Everything older stays on each
+    /// profile shelf, together with your own logs.
+    private let homeLimit = 13
 
     var body: some View {
         ZStack {
@@ -253,12 +254,16 @@ struct TodayView: View {
     }
 
     private func quickCheckIn(_ habit: CDHabit) -> some View {
-        Button(action: {
+        let rested = habit.todayRested
+        let settled = habit.todayChecked || rested
+
+        return Button(action: {
             session.withAuth(prompt: "Sign in to log today.") {
                 // A tap is the cheap path: it marks the day and nothing else.
-                // Tapping a circle that is already logged opens the sheet, so
-                // one control both marks the day and lets it be described.
-                if habit.todayChecked {
+                // Tapping a circle that is already accounted for opens the
+                // sheet, so one control both marks the day and lets it be
+                // described.
+                if settled {
                     detailHabit = habit
                 } else {
                     logNow(habit)
@@ -268,10 +273,14 @@ struct TodayView: View {
             HStack(spacing: 8) {
                 ZStack {
                     Circle()
-                        .fill(habit.todayChecked ? habit.accent : Color.tpInkWell)
+                        .fill(fill(habit, rested: rested))
                         .frame(width: 24, height: 24)
 
-                    if habit.todayChecked {
+                    if rested {
+                        Image(systemName: "moon.zzz")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.tpSky)
+                    } else if habit.todayChecked {
                         Image(systemName: "checkmark")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.tpOnAccent)
@@ -286,23 +295,20 @@ struct TodayView: View {
                         .foregroundColor(.tpCream)
                         .lineLimit(1)
 
-                    Text(habit.todayChecked ? "Logged" : habit.cadenceLabel)
+                    Text(statusLabel(habit, rested: rested))
                         .font(TPFont.ui(10))
-                        .foregroundColor(habit.todayChecked ? habit.accent : .tpCreamFaint)
+                        .foregroundColor(statusColor(habit, rested: rested))
                 }
             }
             .padding(.horizontal, 11)
             .padding(.vertical, 9)
             .background(
                 Capsule(style: .continuous)
-                    .fill(habit.todayChecked ? habit.accent.opacity(0.14) : Color.tpInkWell)
+                    .fill(fill(habit, rested: rested))
             )
             .overlay(
                 Capsule(style: .continuous)
-                    .strokeBorder(
-                        habit.todayChecked ? habit.accent.opacity(0.5) : Color.tpLine,
-                        lineWidth: 1
-                    )
+                    .strokeBorder(stroke(habit, rested: rested), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -315,6 +321,37 @@ struct TodayView: View {
                 Label("Log with details", systemImage: "square.and.pencil")
             }
 
+            // The floor, and the day off. Both live here because both are
+            // answers to "this is not going to happen today", and the tap above
+            // is the answer to everything else.
+            if !habit.todayChecked && habit.hasMinimum {
+                Button {
+                    session.withAuth(prompt: "Sign in to log today.") {
+                        logMinimum(habit)
+                    }
+                } label: {
+                    Label("Only the minimum", systemImage: "arrow.down.circle")
+                }
+            }
+
+            if rested {
+                Button {
+                    session.withAuth(prompt: "Sign in to change this.") {
+                        cancelRest(habit)
+                    }
+                } label: {
+                    Label("Undo today's rest", systemImage: "arrow.uturn.backward")
+                }
+            } else if !habit.todayChecked {
+                Button {
+                    session.withAuth(prompt: "Sign in to set a rest day.") {
+                        declareRest(habit)
+                    }
+                } label: {
+                    Label("Rest today", systemImage: "moon.zzz")
+                }
+            }
+
             if habit.todayChecked {
                 Button(role: .destructive) {
                     session.withAuth(prompt: "Sign in to log today.") {
@@ -325,6 +362,28 @@ struct TodayView: View {
                 }
             }
         }
+    }
+
+    // MARK: Chip styling
+
+    private func fill(_ habit: CDHabit, rested: Bool) -> Color {
+        if rested { return Color.tpSky.opacity(0.18) }
+        return habit.todayChecked ? habit.accent.opacity(0.14) : Color.tpInkWell
+    }
+
+    private func stroke(_ habit: CDHabit, rested: Bool) -> Color {
+        if rested { return Color.tpSky.opacity(0.5) }
+        return habit.todayChecked ? habit.accent.opacity(0.5) : Color.tpLine
+    }
+
+    private func statusLabel(_ habit: CDHabit, rested: Bool) -> String {
+        if rested { return "Resting" }
+        return habit.todayChecked ? "Logged" : habit.cadenceLabel
+    }
+
+    private func statusColor(_ habit: CDHabit, rested: Bool) -> Color {
+        if rested { return .tpSky }
+        return habit.todayChecked ? habit.accent : .tpCreamFaint
     }
 
     // MARK: Filter
@@ -439,16 +498,27 @@ struct TodayView: View {
     // MARK: Loading
 
     private func reload(animated: Bool) {
+        // The page shows the circle, never your own shelf. Your logs are what
+        // your profile is for, and leaving them out is what keeps thirteen
+        // tiles reading as thirteen other people moving.
         let predicate: NSPredicate?
         switch filter {
         case .all:
-            predicate = nil
+            predicate = NSPredicate(format: "isMine == NO")
         case .progress:
-            predicate = NSPredicate(format: "kindRaw != %@", PostKind.summary.rawValue)
+            predicate = NSPredicate(
+                format: "kindRaw != %@ AND isMine == NO",
+                PostKind.summary.rawValue
+            )
         case .recaps:
-            predicate = NSPredicate(format: "kindRaw == %@", PostKind.summary.rawValue)
+            predicate = NSPredicate(
+                format: "kindRaw == %@ AND isMine == NO",
+                PostKind.summary.rawValue
+            )
         case .following:
-            predicate = NSPredicate(format: "author.isFollowedByMe == YES OR author.isCurrentUser == YES")
+            predicate = NSPredicate(
+                format: "(author.isFollowedByMe == YES OR author.isCurrentUser == YES) AND isMine == NO"
+            )
         }
 
         let fetched = CoreDataStack.shared.fetch(
@@ -476,6 +546,30 @@ struct TodayView: View {
     private func undoToday(_ habit: CDHabit) {
         HabitService.removeToday(habit)
         TPHaptic.tap()
+        RefreshSignal.shared.bumpPractice()
+    }
+
+    private func logMinimum(_ habit: CDHabit) {
+        guard HabitService.logMinimum(habit) != nil else { return }
+        TPHaptic.success()
+        tpToast("Minimum logged — that counts", tone: .success, symbol: "arrow.down.circle")
+        RefreshSignal.shared.bumpPractice()
+    }
+
+    private func declareRest(_ habit: CDHabit) {
+        guard HabitService.declareRest(habit) else {
+            tpToast("That day cannot be rested", tone: .warning, symbol: "exclamationmark")
+            return
+        }
+        TPHaptic.success()
+        tpToast("Today is set aside", tone: .success, symbol: "moon.zzz")
+        RefreshSignal.shared.bumpPractice()
+    }
+
+    private func cancelRest(_ habit: CDHabit) {
+        HabitService.cancelRest(habit)
+        TPHaptic.tap()
+        tpToast("Rest removed", tone: .neutral, symbol: "arrow.uturn.backward")
         RefreshSignal.shared.bumpPractice()
     }
 }

@@ -218,6 +218,55 @@ enum Milestone {
     }
 }
 
+// MARK: - Log entries
+//
+// What a day in the log actually was. Five states rather than one, because a
+// streak cannot tell the difference between a day you did the whole thing, a
+// day you did the smallest version, a day you rested on purpose, a day you
+// wrote up afterwards, and a day a freeze card bought back. Each says something
+// different about the practice, and flattening them is how a habit tracker
+// starts lying.
+
+enum CheckInKind: String, CaseIterable, Identifiable {
+
+    /// The ordinary case: something happened and it was written down.
+    case standard
+
+    /// The smallest version of the practice that still counts.
+    case minimum
+
+    /// Declared in advance. The day is accounted for; nothing was done.
+    case rest
+
+    /// Written up afterwards. `HabitService.backfillWindow` bounds how far back.
+    case backfill
+
+    /// Bought back with a freeze card, the way it always was.
+    case freeze
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .standard: return "Logged"
+        case .minimum:  return "Only the minimum"
+        case .rest:     return "Rested"
+        case .backfill: return "Added later"
+        case .freeze:   return "Restored"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .standard: return "checkmark.circle"
+        case .minimum:  return "arrow.down.circle"
+        case .rest:     return "moon.zzz"
+        case .backfill: return "clock.arrow.circlepath"
+        case .freeze:   return "snowflake"
+        }
+    }
+}
+
 // MARK: - User
 
 @objc(CDUser)
@@ -495,6 +544,18 @@ final class CDHabit: NSManagedObject {
     @NSManaged var goalAmount: Double
     @NSManaged var goalUnit: String?
 
+    /// The smallest version of this practice that still counts — "out the door
+    /// for five minutes" on a day the full thing was never going to happen.
+    /// An empty label means none has been set, which is also the enable flag.
+    @NSManaged var minimumLabel: String?
+    @NSManaged var minimumAmount: Double
+    @NSManaged var minimumUnit: String?
+
+    /// This circle's own questions, newline separated. `promptMode` says whether
+    /// they replace the built-in pool or sit alongside it.
+    @NSManaged var promptCustom: String?
+    @NSManaged var promptMode: String?
+
     @NSManaged var checkIns: Set<CDCheckIn>
     @NSManaged var summaries: Set<CDStageSummary>
     @NSManaged var posts: Set<CDPost>
@@ -554,6 +615,51 @@ extension CDHabit {
         }
     }
 
+    // MARK: Minimum
+    //
+    // The smallest version of the practice that still counts. Not a target — the
+    // target is what an honest day looks like. This is what a bad day can still
+    // be, and it is what keeps a run alive on a day when nothing else was going
+    // to happen.
+
+    /// Whether a minimum has been set. The label being non-empty is the whole
+    /// enable flag, so there is no second field to keep in step.
+    var hasMinimum: Bool { !minimumText.isEmpty }
+
+    var minimumText: String {
+        (minimumLabel ?? "").trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The unit a minimum log is filed under, resolved in the order that gives
+    /// the most honest label.
+    var minimumResolvedUnit: String {
+        if let unit = minimumUnit, !unit.isEmpty { return unit }
+        if let unit = goalUnit, !unit.isEmpty { return unit }
+        switch category {
+        case "Reading":  return "pages"
+        case "Movement": return "km"
+        default:         return "session"
+        }
+    }
+
+    // MARK: Questions
+    //
+    // This circle's own questions, stored newline separated. Empty means the
+    // built-in pool, matched on category — so a circle that never touches this
+    // still has something to answer.
+
+    var customPrompts: [String] {
+        (promptCustom ?? "")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    var hasCustomPrompts: Bool { !customPrompts.isEmpty }
+
+    /// Whether a custom list replaces the built-in pool or sits alongside it.
+    var promptReplacesBuiltIns: Bool { promptMode == "replace" }
+
     /// Whether the goal asks for anything today.
     var isScheduledToday: Bool {
         switch goalType {
@@ -565,42 +671,98 @@ extension CDHabit {
         }
     }
 
-    /// How much of the goal the current period covers, 0...1. Daily and
-    /// weekday goals read the day; a weekly goal counts logged days inside the
-    /// current calendar week.
+    // MARK: Days
+    //
+    // Four ways of asking the same log a question, kept side by side because the
+    // difference between them is the whole vocabulary: what a day is *called*
+    // decides whether it counts as showing up, as doing the work, or as keeping
+    // a run alive.
+
+    /// Every day this circle carries an entry for, whatever the entry was.
+    var loggedDays: Set<Date> {
+        let calendar = Calendar.current
+        return Set(checkIns.compactMap { $0.date.map { calendar.startOfDay(for: $0) } })
+    }
+
+    /// Days the practice actually happened on. A rest is not one, and neither is
+    /// a bought-back day — nothing was done on either.
+    var workDays: Set<Date> {
+        let calendar = Calendar.current
+        return Set(
+            checkIns
+                .filter(\.countsAsSession)
+                .compactMap { $0.date.map { calendar.startOfDay(for: $0) } }
+        )
+    }
+
+    /// Days that keep a run alive. Everything counts except a day written up
+    /// afterwards — that one is real, but it does not repair a break.
+    var streakDays: Set<Date> {
+        let calendar = Calendar.current
+        return Set(
+            checkIns
+                .filter { $0.isMine && $0.keepsTheRun }
+                .compactMap { $0.date.map { calendar.startOfDay(for: $0) } }
+        )
+    }
+
+    /// Days settled by a declared rest. Derived, never stored: the rest entry is
+    /// the fact, and this is only a question asked of it.
+    var restedDays: Set<Date> {
+        let calendar = Calendar.current
+        return Set(
+            checkIns
+                .filter(\.isRest)
+                .compactMap { $0.date.map { calendar.startOfDay(for: $0) } }
+        )
+    }
+
+    var todayRested: Bool {
+        restedDays.contains(Calendar.current.startOfDay(for: Date()))
+    }
+
+    /// How much of the goal the current period covers, 0...1. Daily and weekday
+    /// goals read the day; a weekly goal counts the days the work happened.
     var goalProgress: Double {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let logged = Set(checkIns.map { calendar.startOfDay(for: $0.date ?? .distantPast) })
 
         switch goalType {
         case .daily, .weekdays:
             guard isScheduledToday else { return 1 }
-            return logged.contains(today) ? 1 : 0
+            // A rest settles the day without claiming anything was done. The ask
+            // was answered, which is what a plan is.
+            return loggedDays.contains(today) ? 1 : 0
 
         case .weeklyCount:
             let target = max(goalTarget, 1)
             guard let week = calendar.dateInterval(of: .weekOfYear, for: today) else { return 0 }
-            let hits = logged.filter { $0 >= week.start && $0 <= today }.count
+            // Only doing it satisfies a "four times a week" ask. Resting keeps
+            // the run alive; it is not one of the four.
+            let hits = workDays.filter { $0 >= week.start && $0 <= today }.count
             return min(1, Double(hits) / Double(target))
         }
     }
 
-    /// Consecutive logged days ending today. A day that has not been logged yet
-    /// does not break the run, so the count is read from yesterday when today
-    /// is still empty.
+    /// Consecutive days that kept the run alive, ending today. A day that has
+    /// not been answered yet does not break it, so the count is read from
+    /// yesterday when today is still empty.
+    ///
+    /// Reads `streakDays`, which counts rests and minimums and leaves out days
+    /// written up afterwards — the same rule the account streak follows, so the
+    /// circle page and the home badge never disagree about the same morning.
     var computedStreak: Int {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let logged = Set(checkIns.map { calendar.startOfDay(for: $0.date ?? .distantPast) })
-        guard !logged.isEmpty else { return 0 }
+        let days = streakDays
+        guard !days.isEmpty else { return 0 }
 
-        var cursor = logged.contains(today)
+        var cursor = days.contains(today)
             ? today
             : calendar.date(byAdding: .day, value: -1, to: today) ?? today
 
         var count = 0
-        while logged.contains(cursor) {
+        while days.contains(cursor) {
             count += 1
             guard let previous = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
             cursor = previous
@@ -640,11 +802,34 @@ extension CDHabit {
     var weekValues: [Double] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let logged = Set(checkIns.compactMap { $0.date.map { calendar.startOfDay(for: $0) } })
+        let logged = loggedDays
 
         return (0..<7).reversed().map { offset -> Double in
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { return 0 }
             return logged.contains(day) ? 1 : 0
+        }
+    }
+
+    /// The same seven days, as a kind per day, oldest first, nil where the day
+    /// is empty. Added alongside `weekValues` rather than changing it: that
+    /// property feeds three surfaces, and a rest day should still draw as a day
+    /// with something on it rather than as a hole.
+    var weekKinds: [CheckInKind?] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        var byDay: [Date: CheckInKind] = [:]
+        for entry in checkIns where entry.isMine {
+            guard let date = entry.date else { continue }
+            let day = calendar.startOfDay(for: date)
+            // A day holding both a rest and a real log is a log day.
+            if let existing = byDay[day], existing != .rest { continue }
+            byDay[day] = entry.kind
+        }
+
+        return (0..<7).reversed().map { offset in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { return nil }
+            return byDay[day]
         }
     }
 
@@ -686,6 +871,9 @@ final class CDChallenge: NSManagedObject {
     @NSManaged var targetValue: Double
     @NSManaged var unit: String?
     @NSManaged var isJoined: Bool
+    /// When this account walked in. `startDate` is the window the challenge
+    /// covers; this is the day the person joined it.
+    @NSManaged var joinedAt: Date?
     @NSManaged var seed: Int64
 
     @NSManaged var habit: CDHabit?
@@ -701,6 +889,35 @@ extension CDChallenge {
     var heading: String { title ?? "Challenge" }
     var blurbText: String { blurb ?? "" }
     var accent: Color { habit?.accent ?? .tpEmber }
+
+    // MARK: Start line
+    //
+    // `startDate` is the window the challenge covers. `joinedAt` is when this
+    // account walked into it, which is the part a window cannot tell you.
+
+    /// The day this account joined, as a start-of-day value.
+    var joinedDay: Date? {
+        guard let joinedAt else { return nil }
+        return Calendar.current.startOfDay(for: joinedAt)
+    }
+
+    /// How many days into the window a date falls. Zero is the day the
+    /// challenge opened, which is where anyone who was already here stands.
+    func dayIndex(on date: Date) -> Int {
+        guard let startDate else { return 0 }
+        let calendar = Calendar.current
+        let offset = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: startDate),
+            to: calendar.startOfDay(for: date)
+        ).day ?? 0
+        return max(offset, 0)
+    }
+
+    /// Where this account stands on the line, in days from the start.
+    var myDayIndex: Int {
+        dayIndex(on: joinedDay ?? startDate ?? Date())
+    }
 
     var totalDays: Int {
         guard let startDate, let endDate else { return 0 }
@@ -807,6 +1024,22 @@ final class CDCheckIn: NSManagedObject {
     /// without letting it inflate the effort numbers.
     @NSManaged var isFreeze: Bool
 
+    /// What this entry actually was — a plain log, a minimum, a planned rest, a
+    /// day written up afterwards, or a bought-back day. Read it through `kind`,
+    /// which falls back to `isFreeze` for rows written before this existed.
+    @NSManaged var kindRaw: String?
+
+    /// When the row was written, as opposed to the day it describes. Nil on
+    /// everything the sample data shipped — which is exactly the set whose
+    /// clock time cannot be trusted, so the hour a practice happened at is only
+    /// ever read from rows that carry one.
+    @NSManaged var createdAt: Date?
+
+    /// The question this entry was answering, when there was one. Stored
+    /// because the pool rotates and the circle can edit it, so the question as
+    /// it was asked is not recoverable later.
+    @NSManaged var promptText: String?
+
     @NSManaged var habit: CDHabit?
 }
 
@@ -816,6 +1049,61 @@ extension CDCheckIn {
     var relativeTime: String { TPTime.relative(from: date) }
 
     var hasNote: Bool { !noteText.isEmpty }
+
+    // MARK: Kind
+    //
+    // The raw value is written by every path since the log gained a vocabulary.
+    // Rows from before that carry nothing, so the read falls back: a bought-back
+    // day is still a bought-back day, and everything else was a plain log. That
+    // fallback is what lets the whole thing land without a migration script.
+
+    var kind: CheckInKind {
+        get {
+            if let raw = kindRaw, let parsed = CheckInKind(rawValue: raw) { return parsed }
+            return isFreeze ? .freeze : .standard
+        }
+        set {
+            kindRaw = newValue.rawValue
+            // Kept in step, so anything still reading the old flag sees the truth.
+            isFreeze = (newValue == .freeze)
+        }
+    }
+
+    var isMinimum: Bool { kind == .minimum }
+    var isRest: Bool { kind == .rest }
+    var isBackfilled: Bool { kind == .backfill }
+
+    /// Whether this day keeps a run alive. A day written up afterwards is real,
+    /// and counts as presence everywhere — but it does not repair a break. Not
+    /// repairing it is the entire reason the day is marked.
+    var keepsTheRun: Bool { kind != .backfill }
+
+    /// Whether this counts as a session of the practice. A rest is not one, and
+    /// neither is a bought-back day: nothing was done on either.
+    var countsAsSession: Bool { kind != .rest && kind != .freeze }
+
+    /// The one-tap log from `HabitService.quickLog`, and nothing else. Minimums
+    /// are excluded by kind, so choosing the smallest version is never read as
+    /// laziness — it is read as the thing it is.
+    var isPerfunctory: Bool {
+        guard kind == .standard else { return false }
+        return amountValue <= 1
+            && (amountUnit ?? "") == "session"
+            && durationMinutes == 0
+            && !hasNote
+    }
+
+    /// True only for rows a person wrote in the app, at the moment they wrote
+    /// them. The sample data carries no clock time worth reading, and this is
+    /// how that is known rather than guessed at.
+    var wasWrittenByHand: Bool { createdAt != nil }
+
+    /// The question this entry was answering, when it answered one. A prompt
+    /// with no words under it is not an answer.
+    var answeredPrompt: String? {
+        guard hasNote, let promptText, !promptText.isEmpty else { return nil }
+        return promptText
+    }
 
     var day: Date { Calendar.current.startOfDay(for: date ?? .distantPast) }
 

@@ -22,24 +22,43 @@ enum HabitService {
         unit: String,
         minutes: Int,
         note: String,
-        isFreeze: Bool = false
+        isFreeze: Bool = false,
+        date: Date = Date(),
+        kind: CheckInKind = .standard,
+        prompt: String? = nil
     ) -> CDCheckIn? {
         let entry = CDCheckIn(context: context)
         entry.id = UUID()
         entry.habit = habit
-        entry.date = Date()
+        entry.date = date
         entry.isMine = true
-        entry.isFreeze = isFreeze
+        // The setter keeps `isFreeze` in step, so anything still reading the old
+        // flag sees the truth.
+        entry.kind = isFreeze ? .freeze : kind
+        // When the row was written, which for a backfilled day is not the same
+        // as the day it describes. Only real write paths set this.
+        entry.createdAt = Date()
         entry.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
         entry.amountValue = max(amount, 0)
         entry.amountUnit = unit.isEmpty ? "session" : unit
         entry.durationMinutes = Int32(max(minutes, 0))
+        // A question with no words under it is not an answer, so a prompt is
+        // only kept when something was actually written.
+        entry.promptText = entry.hasNote ? prompt : nil
+
+        // Doing the thing on a day that was declared a rest settles the day the
+        // ordinary way; the rest was only ever a placeholder for it.
+        clearRest(on: entry.day, for: habit)
 
         settle(habit)
 
         // Adding a day to the log is the only thing that can lengthen a run, so
         // this is the single place the ladder and the weekly payout are checked.
-        MilestonePresenter.shared.consider()
+        // A day written up afterwards lengthens nothing, so it is not counted
+        // here — otherwise the ladder could be climbed from hindsight.
+        if entry.keepsTheRun {
+            MilestonePresenter.shared.consider()
+        }
         return entry
     }
 
@@ -50,10 +69,12 @@ enum HabitService {
         logCheckIn(habit, amount: 1, unit: "session", minutes: 0, note: "")
     }
 
+    /// Today's log entry, when the practice is on it. A day declared as rest is
+    /// not a log — it is the absence of one, marked in advance.
     static func todayCheckIn(for habit: CDHabit) -> CDCheckIn? {
         let calendar = Calendar.current
         return habit.checkIns.first {
-            $0.isMine && calendar.isDateInToday($0.date ?? .distantPast)
+            $0.isMine && !$0.isRest && calendar.isDateInToday($0.date ?? .distantPast)
         }
     }
 
@@ -64,12 +85,23 @@ enum HabitService {
         amount: Double,
         unit: String,
         minutes: Int,
-        note: String
+        note: String,
+        prompt: String? = nil
     ) {
         checkIn.amountValue = max(amount, 0)
         checkIn.amountUnit = unit.isEmpty ? "session" : unit
         checkIn.durationMinutes = Int32(max(minutes, 0))
         checkIn.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Describing a row makes it hand-written, which is what lets the hour it
+        // was written at be read from it.
+        if checkIn.createdAt == nil { checkIn.createdAt = Date() }
+
+        if !checkIn.hasNote {
+            checkIn.promptText = nil
+        } else if let prompt {
+            checkIn.promptText = prompt
+        }
 
         if let habit = checkIn.habit {
             settle(habit)
@@ -113,7 +145,11 @@ enum HabitService {
         let calendar = Calendar.current
         let mine = habit.checkIns.filter(\.isMine)
 
-        habit.todayChecked = mine.contains { calendar.isDateInToday($0.date ?? .distantPast) }
+        // A rest settles the day without claiming the practice happened, so it
+        // is never read as a check-in where the question is "did you do it".
+        habit.todayChecked = mine.contains {
+            !$0.isRest && calendar.isDateInToday($0.date ?? .distantPast)
+        }
         habit.streak = Int32(habit.computedStreak)
         habit.totalMinutes = Int32(mine.reduce(0) { $0 + Int($1.durationMinutes) })
         habit.progress = habit.goalProgress
@@ -132,9 +168,14 @@ enum HabitService {
             predicate: NSPredicate(format: "isJoined == YES")
         )
         let mine = joined.flatMap(\.checkIns).filter(\.isMine)
-        let days = Set(mine.compactMap { $0.date.map { calendar.startOfDay(for: $0) } })
 
-        user.totalCheckIns = Int32(mine.count)
+        // The same streak-qualifying set the circle streak reads: every kind
+        // except a day written up afterwards.
+        let days = loggedDays(joinedOnly: true)
+
+        // A rest is not a session and neither is a bought-back day, so the tally
+        // the profile shows counts the days the practice actually happened.
+        user.totalCheckIns = Int32(mine.filter(\.countsAsSession).count)
         guard !days.isEmpty else {
             user.streak = 0
             return
@@ -215,6 +256,180 @@ enum HabitService {
             if days == HabitWeekday.days(in: HabitWeekday.weekdaysMask) { return "Weekdays" }
             return habit.goalLabel
         }
+    }
+
+    // MARK: - Minimum
+    //
+    // The smallest version of the practice that still counts. Not a shortcut
+    // around the work — a floor under it, for the days when the full thing was
+    // never going to happen and doing nothing was the alternative.
+
+    static func setMinimum(_ habit: CDHabit, label: String, amount: Double, unit: String) {
+        habit.minimumLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        habit.minimumAmount = max(amount, 0)
+        habit.minimumUnit = unit.trimmingCharacters(in: .whitespaces)
+        CoreDataStack.shared.save()
+    }
+
+    static func clearMinimum(_ habit: CDHabit) {
+        habit.minimumLabel = ""
+        habit.minimumAmount = 0
+        habit.minimumUnit = ""
+        CoreDataStack.shared.save()
+    }
+
+    /// Logs the smallest version in one tap. It keeps the run alive exactly as a
+    /// full session would — that is the whole point of having defined it.
+    @discardableResult
+    static func logMinimum(_ habit: CDHabit) -> CDCheckIn? {
+        logCheckIn(
+            habit,
+            amount: max(habit.minimumAmount, 1),
+            unit: habit.minimumResolvedUnit,
+            minutes: 0,
+            note: "",
+            kind: .minimum
+        )
+    }
+
+    // MARK: - Planned rest
+    //
+    // A day off decided in advance. It keeps the run alive and costs nothing, so
+    // it can only be claimed ahead of time: a rest declared afterwards is not a
+    // plan, it is a story, and the value of this log is that it does not contain
+    // those.
+    //
+    // That is also what separates it from a freeze card. The card buys a day
+    // back after the fact and is scarce; this is free, and has to be honest
+    // instead.
+
+    /// How far ahead a rest can be declared. Today or tomorrow is a plan; a week
+    /// out is an excuse.
+    static let restLookaheadDays = 1
+
+    /// Whether the practice is on the log for a given day.
+    static func isChecked(_ habit: CDHabit, on day: Date) -> Bool {
+        let calendar = Calendar.current
+        let target = calendar.startOfDay(for: day)
+        return habit.checkIns.contains {
+            $0.isMine && !$0.isRest
+                && calendar.startOfDay(for: $0.date ?? .distantPast) == target
+        }
+    }
+
+    /// The rest entry declared for a day, if there is one.
+    static func restDay(for habit: CDHabit, on day: Date) -> CDCheckIn? {
+        let calendar = Calendar.current
+        let target = calendar.startOfDay(for: day)
+        return habit.checkIns.first {
+            $0.isMine && $0.isRest
+                && calendar.startOfDay(for: $0.date ?? .distantPast) == target
+        }
+    }
+
+    static func hasRested(_ habit: CDHabit, on day: Date) -> Bool {
+        restDay(for: habit, on: day) != nil
+    }
+
+    /// Declares a rest. Today or tomorrow only, and never a day the practice is
+    /// already on.
+    @discardableResult
+    static func declareRest(_ habit: CDHabit, on day: Date = Date()) -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let target = calendar.startOfDay(for: day)
+
+        guard habit.isJoined else { return false }
+        guard target >= today else { return false }
+        guard let horizon = calendar.date(byAdding: .day, value: restLookaheadDays, to: today),
+              target <= horizon
+        else { return false }
+        guard !isChecked(habit, on: target) else { return false }
+        guard restDay(for: habit, on: target) == nil else { return false }
+
+        let entry = CDCheckIn(context: context)
+        entry.id = UUID()
+        entry.habit = habit
+        entry.date = target
+        entry.isMine = true
+        entry.kind = .rest
+        entry.createdAt = Date()
+        entry.note = ""
+        entry.amountValue = 0
+        entry.amountUnit = "rested"
+        entry.durationMinutes = 0
+
+        settle(habit)
+        // A rest lengthens the run, so declaring one can cross a rung.
+        MilestonePresenter.shared.consider()
+        return true
+    }
+
+    static func cancelRest(_ habit: CDHabit, on day: Date = Date()) {
+        guard let entry = restDay(for: habit, on: day) else { return }
+        context.delete(entry)
+        settle(habit)
+    }
+
+    /// Drops the rest placeholder on a day the practice ended up happening.
+    private static func clearRest(on day: Date, for habit: CDHabit) {
+        guard let entry = restDay(for: habit, on: day) else { return }
+        context.delete(entry)
+    }
+
+    // MARK: - Backfill
+    //
+    // Writing up a day that has already gone. The window is deliberately short —
+    // a week of hindsight is a spreadsheet, three days is a memory — and a
+    // backfilled day never lengthens a run. It makes the record complete; it
+    // does not rewrite it.
+
+    /// How many days back a day can still be written up.
+    static let backfillWindow = 3
+
+    /// Whether a day is still inside the window: recent, in the past, not today.
+    static func canBackfill(_ day: Date) -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let target = calendar.startOfDay(for: day)
+        guard let earliest = calendar.date(byAdding: .day, value: -backfillWindow, to: today)
+        else { return false }
+        return target >= earliest && target < today
+    }
+
+    /// The days still open, most recent first. Today is not among them — today
+    /// has its own door.
+    static func backfillableDays(for habit: CDHabit) -> [Date] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        return (1...backfillWindow).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today)
+            else { return nil }
+            return isChecked(habit, on: day) ? nil : day
+        }
+    }
+
+    @discardableResult
+    static func logBackfill(
+        _ habit: CDHabit,
+        on day: Date,
+        amount: Double,
+        unit: String,
+        minutes: Int,
+        note: String
+    ) -> CDCheckIn? {
+        guard habit.isJoined, canBackfill(day), !isChecked(habit, on: day) else { return nil }
+
+        let calendar = Calendar.current
+        return logCheckIn(
+            habit,
+            amount: amount,
+            unit: unit,
+            minutes: minutes,
+            note: note,
+            date: calendar.startOfDay(for: day),
+            kind: .backfill
+        )
     }
 
     // MARK: - Freeze cards
@@ -314,7 +529,8 @@ enum HabitService {
         entry.habit = habit
         entry.date = yesterday
         entry.isMine = true
-        entry.isFreeze = true
+        entry.kind = .freeze
+        entry.createdAt = Date()
         entry.note = "Bought back with a freeze card"
         entry.amountValue = 0
         entry.amountUnit = "restored"
@@ -330,7 +546,14 @@ enum HabitService {
 
     // MARK: - Reading the log
 
-    /// Every day with at least one check-in, as start-of-day values.
+    /// Every day with at least one entry that keeps a run alive, as start-of-day
+    /// values.
+    ///
+    /// Days written up afterwards are left out. They are real, and they count as
+    /// presence everywhere else — but they do not repair a break, and a week
+    /// completed out of them would pay out a freeze card for work that did not
+    /// happen on the day. That is the only reward this app hands out, and it is
+    /// meant to be earned by returning rather than by remembering.
     static func loggedDays(joinedOnly: Bool) -> Set<Date> {
         let calendar = Calendar.current
         let habits = CoreDataStack.shared.fetch(
@@ -340,7 +563,7 @@ enum HabitService {
         return Set(
             habits
                 .flatMap(\.checkIns)
-                .filter(\.isMine)
+                .filter { $0.isMine && $0.keepsTheRun }
                 .compactMap { $0.date.map { calendar.startOfDay(for: $0) } }
         )
     }

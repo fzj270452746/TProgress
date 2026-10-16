@@ -162,6 +162,9 @@ enum Seeder {
         let likedByMe: Bool
     }
 
+    /// At most one video post per topic: a shipped clip is addressed by topic
+    /// name, so a second video post in the same topic would play the same
+    /// footage twice on one page. Everything else carries stills.
     private static let posts: [SeedPost] = [
         SeedPost(author: "mira.k",
                  text: "Five pages of The Idiot on the bus before work. Half asleep, but the streak survives. That was the entire goal today.",
@@ -208,13 +211,13 @@ enum Seeder {
         SeedPost(author: "arjun",
                  text: "Finished chapter twelve. Stopped fighting the urge to skim and read the whole thing twice instead.",
                  kind: .progress, topic: "reading", habit: "Deep Reading",
-                 amount: 18, unit: "pages", minutes: 45, media: 0, video: false,
+                 amount: 18, unit: "pages", minutes: 45, media: 1, video: false,
                  likes: 73, ageHours: 26, likedByMe: false),
 
         SeedPost(author: "sofia",
                  text: "Scales for fifteen minutes. Boring. Necessary. Nobody claps for scales.",
                  kind: .checkIn, topic: "music", habit: "Piano Practice",
-                 amount: 15, unit: "min", minutes: 15, media: 1, video: true,
+                 amount: 15, unit: "min", minutes: 15, media: 1, video: false,
                  likes: 159, ageHours: 30, likedByMe: false),
 
         SeedPost(author: "kenji",
@@ -268,7 +271,7 @@ enum Seeder {
         SeedPost(author: "harriet",
                  text: "Learned the bridge. It is four chords and it took me an hour. Posting it anyway.",
                  kind: .progress, topic: "music", habit: "Piano Practice",
-                 amount: 60, unit: "min", minutes: 60, media: 1, video: true,
+                 amount: 60, unit: "min", minutes: 60, media: 1, video: false,
                  likes: 231, ageHours: 86, likedByMe: true),
 
         SeedPost(author: "elenap",
@@ -292,7 +295,7 @@ enum Seeder {
         SeedPost(author: "priya",
                  text: "Lake was six degrees. My hands did not work properly for ten minutes afterwards. Would do again.",
                  kind: .checkIn, topic: "cold", habit: "Cold Plunge",
-                 amount: 2, unit: "min", minutes: 2, media: 1, video: true,
+                 amount: 2, unit: "min", minutes: 2, media: 1, video: false,
                  likes: 302, ageHours: 128, likedByMe: false),
 
         SeedPost(author: "marcus",
@@ -451,8 +454,10 @@ enum Seeder {
             .replacingOccurrences(of: "-", with: "_")
     }
 
-    static func mediaAsset(for topic: String, index: Int) -> String {
-        "media_\(topic)_\(min(index + 1, 3))"
+    /// Numbered per topic, counting up across posts rather than within one, so
+    /// no two posts in a topic land on the same frame.
+    static func mediaAsset(for topic: String, number: Int) -> String {
+        "media_\(topic)_\(number)"
     }
 
     static func videoAsset(for topic: String) -> String {
@@ -526,13 +531,28 @@ enum Seeder {
             habitsByTitle[template.name] = habit
         }
 
+        // Art is addressed per post, not per topic. Two people logging the same
+        // habit still took different photographs, so every post draws the next
+        // unused frame from its topic's pool rather than sharing the first one —
+        // which is what made a thirteen-tile page repeat itself.
+        var mediaCursorByTopic: [String: Int] = [:]
+
         for (index, template) in (posts + myPosts).enumerated() {
             guard let author = usersByUsername[template.author] else { continue }
+
+            let mediaStart = mediaCursorByTopic[template.topic, default: 1]
+            // A video post shows its clip, not a frame from the still pool, so
+            // it must not consume a number the next still post would want.
+            if !template.video {
+                mediaCursorByTopic[template.topic] = mediaStart + template.media
+            }
+
             makePost(
                 template,
                 author: author,
                 habit: template.habit.flatMap { habitsByTitle[$0] },
                 seed: Int64(900 + index * 13),
+                mediaStart: mediaStart,
                 isMine: template.author == primaryUsername,
                 context: context
             )
@@ -571,6 +591,7 @@ enum Seeder {
         author: CDUser,
         habit: CDHabit?,
         seed: Int64,
+        mediaStart: Int,
         isMine: Bool,
         context: NSManagedObjectContext
     ) {
@@ -599,7 +620,7 @@ enum Seeder {
             let isVideo = template.video && index == 0
             media.assetName = isVideo
                 ? Seeder.videoAsset(for: template.topic)
-                : Seeder.mediaAsset(for: template.topic, index: index)
+                : Seeder.mediaAsset(for: template.topic, number: mediaStart + index)
             media.kind = isVideo ? .video : .image
             media.durationSeconds = isVideo ? Double(18 + (seed % 90)) : 0
             media.caption = nil
